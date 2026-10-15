@@ -565,6 +565,21 @@ export class Game {
       get aiProgress() {
         return gameRef.ais.map((ai) => Math.round(ai.position.length()));
       },
+      /**
+       * Worst angle (degrees) between a boost pad's chevron direction (its
+       * texture-up axis) and the track tangent under it — ~0 when every pad
+       * points down the road. Regression guard for pad placement.
+       */
+      get padMisalignmentDeg(): number {
+        let worst = 0;
+        const arrow = new THREE.Vector3();
+        for (const pad of gameRef.track.boostPads) {
+          arrow.set(0, 1, 0).applyQuaternion(pad.mesh.quaternion);
+          const tangent = gameRef.track.frameAt(pad.distance).tangent;
+          worst = Math.max(worst, Math.acos(clamp(arrow.dot(tangent), -1, 1)));
+        }
+        return THREE.MathUtils.radToDeg(worst);
+      },
       restart: () => gameRef.restart(),
       start: () => void gameRef.startRace(),
     };

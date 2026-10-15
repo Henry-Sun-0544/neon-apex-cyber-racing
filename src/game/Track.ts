@@ -509,9 +509,15 @@ export class Track {
       });
       const mesh = new THREE.Mesh(geo, mat);
       const f = this.frameAt(distance);
-      mesh.position.copy(f.pos).addScaledVector(f.side, lateral).addScaledVector(new THREE.Vector3(0, 1, 0), 0.06);
-      mesh.rotation.x = -Math.PI / 2;
-      mesh.rotation.z = -Math.atan2(f.tangent.x, f.tangent.z);
+      const normal = new THREE.Vector3().crossVectors(f.side, f.tangent).normalize();
+      // Sit the pad on the road surface and orient it with the track frame, so
+      // the chevron apex (local +Y) points exactly down the driving direction
+      // and the plane hugs the road on slopes instead of clipping into it.
+      mesh.position
+        .copy(f.pos)
+        .addScaledVector(f.side, lateral)
+        .addScaledVector(normal, 0.06);
+      mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(f.side, f.tangent, normal));
       mesh.renderOrder = 2;
       this.group.add(mesh);
       this.boostPads.push({ distance, lateral, halfLength, halfWidth, mesh });

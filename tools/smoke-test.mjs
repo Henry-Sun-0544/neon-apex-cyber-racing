@@ -295,6 +295,10 @@ async function phaseAutopilotRace(page) {
   check('game boots and exposes live state', true);
   check('at least 3 AI opponents', boot.ai >= 3, `${boot.ai} AI cars`);
   check('HUD visible during the race', boot.hud === true);
+  // Boost pad chevrons must point down the driving direction (a placement
+  // rotation bug once laid them backwards / sideways on diagonal segments).
+  const pads = await cdp.json('{mis: __NACR__.padMisalignmentDeg}');
+  check('boost pads point down the track', pads.mis < 1, `${pads.mis.toFixed(2)}° worst misalignment`);
 
   await cdp.waitForValue('__NACR__.phase === "racing"', 20000, 'racing phase');
   await sleep(4000);
