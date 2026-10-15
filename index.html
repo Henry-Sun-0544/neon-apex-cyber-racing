@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23070312'/%3E%3Cpath d='M14 50 L32 14 L50 50' stroke='%2324f0ff' stroke-width='6' fill='none'/%3E%3Cpath d='M22 42 L42 42' stroke='%23ff2fb9' stroke-width='6'/%3E%3C/svg%3E"
+    />
+    <title>Neon Apex: Cyber Racing | 霓虹之巅：赛博竞速</title>
+    <meta name="description" content="Neon Apex: Cyber Racing (NA:CR) - a procedural cyberpunk 3D racing game built with Three.js" />
+  </head>
+  <body>
+    <!-- WebGL canvas host -->
+    <div id="app">
+      <canvas id="game-canvas"></canvas>
+    </div>
+
+    <!-- ============ HUD (during race) ============ -->
+    <div id="hud" class="hidden" aria-hidden="true">
+      <div class="hud-top">
+        <div class="hud-block">
+          <div class="hud-label">POS</div>
+          <div class="hud-value" id="hud-position">1<span class="hud-sub">/6</span></div>
+        </div>
+        <div class="hud-block">
+          <div class="hud-label">LAP</div>
+          <div class="hud-value" id="hud-lap">1<span class="hud-sub">/3</span></div>
+        </div>
+        <div class="hud-block hud-block--wide">
+          <div class="hud-label">RACE TIME</div>
+          <div class="hud-value hud-value--mono" id="hud-time">0:00.000</div>
+        </div>
+        <div class="hud-block hud-block--wide">
+          <div class="hud-label">CURRENT LAP</div>
+          <div class="hud-value hud-value--mono" id="hud-lap-time">0:00.000</div>
+        </div>
+        <div class="hud-block hud-block--wide">
+          <div class="hud-label">BEST LAP</div>
+          <div class="hud-value hud-value--mono hud-value--best" id="hud-best-lap">--:--.---</div>
+        </div>
+      </div>
+
+      <div class="hud-right">
+        <div class="minimap-frame">
+          <canvas id="minimap" width="200" height="200"></canvas>
+          <div class="minimap-title">TRACK MAP</div>
+        </div>
+        <div class="speedo">
+          <div class="speedo-value" id="hud-speed">0</div>
+          <div class="speedo-unit">KM/H</div>
+        </div>
+      </div>
+
+      <div class="hud-bottom">
+        <div class="nitro-wrap">
+          <div class="nitro-head">
+            <span>NITRO</span><span id="hud-nitro-pct">100%</span>
+          </div>
+          <div class="nitro-bar">
+            <div class="nitro-fill" id="hud-nitro-fill"></div>
+          </div>
+        </div>
+        <div class="boost-indicator" id="hud-boost">BOOST PAD</div>
+      </div>
+
+      <div class="hud-toast" id="hud-toast"></div>
+      <div class="hud-wrongway hidden" id="hud-wrongway">&#9664; WRONG WAY / 逆行 &#9654;</div>
+      <div class="hud-keys">
+        <b>W</b> 加速 · <b>S</b> 刹车/倒车 · <b>A/D</b> 转向 · <b>SPACE</b> 氮气 · <b>C</b> 视角 · <b>M</b> 静音 · <b>R</b> 重开
+      </div>
+      <div class="hud-fps" id="hud-fps">-- FPS</div>
+    </div>
+
+    <!-- ============ Start menu ============ -->
+    <div id="menu" class="overlay">
+      <div class="scanlines"></div>
+      <div class="menu-card">
+        <div class="title-wrap">
+          <h1 class="title-neon" data-text="NEON APEX">NEON APEX</h1>
+          <h2 class="title-sub">CYBER RACING · 霓虹之巅：赛博竞速</h2>
+        </div>
+
+        <div class="menu-grid">
+          <section class="panel">
+            <h3>CONTROLS / 操作</h3>
+            <ul class="controls">
+              <li><kbd>W</kbd><span>加速 / Accelerate</span></li>
+              <li><kbd>S</kbd><span>刹车 · 倒车 / Brake · Reverse</span></li>
+              <li><kbd>A</kbd><kbd>D</kbd><span>转向 / Steer</span></li>
+              <li><kbd>Space</kbd><span>氮气 / Nitro boost</span></li>
+              <li><kbd>C</kbd><span>切换相机 / Camera</span></li>
+              <li><kbd>M</kbd><span>静音 / Mute</span></li>
+              <li><kbd>R</kbd><span>重开 / Restart race</span></li>
+            </ul>
+          </section>
+          <section class="panel">
+            <h3>BRIEFING / 赛事简报</h3>
+            <ul class="brief">
+              <li>赛道：<b id="menu-laps">3</b> 圈闭合高架环线</li>
+              <li>对手：<b id="menu-ai">5</b> 台 AI 赛车</li>
+              <li>目标：穿过加速带 · 善用氮气 · 冲过终点</li>
+              <li>碰撞会减速，注意护栏与 AI 走线</li>
+            </ul>
+            <div class="audio-row">
+              <button id="btn-mute" class="btn btn--ghost" type="button" aria-pressed="false">🔊 SOUND ON</button>
+              <label class="vol">
+                <span>VOL</span>
+                <input id="volume" type="range" min="0" max="100" value="70" />
+              </label>
+            </div>
+          </section>
+        </div>
+
+        <button id="btn-start" class="btn btn--start" type="button">START ENGINE / 开始比赛</button>
+        <p class="hint" id="menu-hint">点击开始以启用音频（Web Audio 需用户手势）</p>
+        <p class="hint hint--err" id="menu-error"></p>
+      </div>
+      <div class="menu-footer">NA:CR · Vite + TypeScript + Three.js · 100% 程序化生成资源</div>
+    </div>
+
+    <!-- ============ Countdown ============ -->
+    <div id="countdown" class="overlay overlay--transparent hidden">
+      <div class="countdown-num" id="countdown-num">3</div>
+      <div class="countdown-sub" id="countdown-sub">GET READY</div>
+    </div>
+
+    <!-- ============ Results ============ -->
+    <div id="results" class="overlay hidden">
+      <div class="scanlines"></div>
+      <div class="menu-card results-card">
+        <h1 class="title-neon title-neon--small" data-text="RACE COMPLETE">RACE COMPLETE</h1>
+        <div class="result-hero">
+          <div class="result-pos" id="result-pos">P1</div>
+          <div class="result-msg" id="result-msg">VICTORY / 冠军</div>
+        </div>
+        <table class="results-table">
+          <thead>
+            <tr><th>#</th><th>RACER</th><th>BEST LAP</th><th>TOTAL</th></tr>
+          </thead>
+          <tbody id="results-body"></tbody>
+        </table>
+        <div class="results-stats" id="results-stats"></div>
+        <div class="results-actions">
+          <button id="btn-restart" class="btn btn--start" type="button">RESTART / 再来一局 (R)</button>
+          <button id="btn-menu" class="btn btn--ghost" type="button">MENU / 返回菜单</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

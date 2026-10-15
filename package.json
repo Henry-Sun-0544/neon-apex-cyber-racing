@@ -1,0 +1,29 @@
+{
+  "name": "neon-apex-cyber-racing",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Neon Apex: Cyber Racing (NA:CR) - procedural cyberpunk 3D racing game built with Vite + TypeScript + Three.js",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "three.js",
+    "typescript",
+    "vite",
+    "racing",
+    "cyberpunk"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.186.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.3"
+  }
+}
