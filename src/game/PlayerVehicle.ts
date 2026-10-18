@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { CONFIG } from './Config';
-import type { Track } from './Track';
+import type { RaceWorld } from './world/RaceWorld';
 import type { ParticleSystem } from './ParticleSystem';
+import type { MaterialLibrary } from './MaterialLibrary';
 import { VehicleBase, type VehicleInput } from './VehicleBase';
+import type { VehicleDetail } from './VehicleFactory';
 
 /**
  * The player car: same physics as the AI, plus nitro management, exhaust
@@ -18,8 +20,9 @@ export class PlayerVehicle extends VehicleBase {
   private readonly tmpB = new THREE.Vector3();
   private wasBoosting = false;
 
-  constructor() {
-    super({ bodyColor: 0x1b2340, accentColor: CONFIG.colors.cyan, isPlayer: true });
+  constructor(detail: VehicleDetail = 'low', library: MaterialLibrary | null = null) {
+    // Placeholder chassis; Game.applyCarPreset swaps in the garage pick.
+    super({ bodyColor: 0x1b2340, accentColor: CONFIG.colors.cyan, isPlayer: true, chassis: 'concept' }, detail, library);
     this.object.name = 'player-car';
   }
 
@@ -29,7 +32,7 @@ export class PlayerVehicle extends VehicleBase {
    * @param track   track used for speed-pad detection
    * @param particles particle system for flames / pad bursts
    */
-  update(dt: number, input: VehicleInput, track: Track, particles: ParticleSystem): void {
+  update(dt: number, input: VehicleInput, track: RaceWorld, particles: ParticleSystem): void {
     const wasActive = this.nitroActive;
     this.updateNitro(dt, input.nitro);
     if (wasActive && !this.nitroActive && this.nitro <= 0.5 && input.nitro) this.nitroDry = true;

@@ -9,3 +9,6 @@ dist/
 
 # Logs
 *.log
+
+# Local agent workspace
+.zcode/

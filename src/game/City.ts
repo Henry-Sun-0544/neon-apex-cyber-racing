@@ -14,6 +14,8 @@ interface BuildingRecord {
   rotY: number;
   variant: number;
   tint: THREE.Color;
+  /** Signed distance from the track centre line at the tower's own frame. */
+  lateral: number;
 }
 
 const SIGN_WORDS = [
@@ -118,7 +120,7 @@ export class City {
     });
     const ground = new THREE.Mesh(geo, mat);
     ground.rotation.x = -Math.PI / 2;
-    ground.position.y = CONFIG.track.groundY;
+    ground.position.y = this.track.groundY;
     ground.name = 'ground';
     this.group.add(ground);
     this.disposables.push(geo, mat, tex);
@@ -172,19 +174,21 @@ export class City {
       const yaw = Math.atan2(f.tangent.x, f.tangent.z);
       for (const sideSign of [-1, 1]) {
         // Two depth bands: a dense near canyon and a taller far skyline.
+        // The near band starts far enough out that even a corner-max tower
+        // (half-diagonal ~18 m) clears the widened road + rails.
         const near = this.rng() < 0.62;
-        const lateral = sideSign * (near ? randRange(30, 66) : randRange(74, 190));
+        const lateral = sideSign * (near ? randRange(34, 66) : randRange(74, 190));
         const width = near ? randRange(12, 26) : randRange(18, 40);
         const depth = near ? randRange(12, 26) : randRange(18, 40);
         const basePos = f.pos.clone().addScaledVector(f.side, lateral);
         const roadY = f.pos.y;
-        const minHeight = roadY - CONFIG.track.groundY + randRange(8, 34);
+        const minHeight = roadY - this.track.groundY + randRange(8, 34);
         const height = near
           ? Math.max(minHeight, randRange(28, 86))
           : Math.max(minHeight, randRange(60, 190));
         const rec: BuildingRecord = {
           x: basePos.x,
-          y: CONFIG.track.groundY,
+          y: this.track.groundY,
           z: basePos.z,
           width,
           depth,
@@ -192,26 +196,33 @@ export class City {
           rotY: yaw + randRange(-0.25, 0.25),
           variant: Math.floor(this.rng() * variantCount),
           tint: new THREE.Color().setHSL(0.62 + randRange(-0.15, 0.2), randRange(0.05, 0.3), randRange(0.07, 0.2)),
+          lateral,
         };
         buckets[rec.variant]!.push(rec);
-
-        // Towers close to the highway become real obstacles.
-        if (Math.abs(lateral) < 64) {
-          this.collisionBoxes.push({
-            x: rec.x,
-            y: rec.y + height / 2,
-            z: rec.z,
-            halfX: width / 2,
-            halfY: height / 2,
-            halfZ: depth / 2,
-            rotY: rec.rotY,
-            tag: 'building',
-          });
-        }
       }
     }
 
     const all: BuildingRecord[] = [];
+    // The loop can pass close to itself; a tower that reaches into ANOTHER
+    // leg's deck zone must stop below that deck underside, or it stabs
+    // straight through the highway.
+    const skirt = CONFIG.track.skirtDepth;
+    const halfDiag = (w: number, d: number): number => Math.hypot(w, d) / 2;
+    for (const rec of [...buckets.flat()]) {
+      const reach = halfDiag(rec.width, rec.depth) + this.track.halfWidth + 1;
+      let cap = Infinity;
+      for (let i = 0; i < this.track.samples.length; i += 4) {
+        const s = this.track.samples[i]!;
+        const dist = Math.hypot(s.pos.x - rec.x, s.pos.z - rec.z);
+        if (dist > reach) continue;
+        const deckBottom = s.pos.y - skirt;
+        if (deckBottom <= this.track.groundY + 0.5) continue; // deck at/below street level
+        if (this.track.groundY + rec.height > deckBottom - 0.8) {
+          cap = Math.min(cap, deckBottom - 0.8 - this.track.groundY);
+        }
+      }
+      if (cap < rec.height) rec.height = Math.max(6, cap);
+    }
     buckets.forEach((records, variant) => {
       if (records.length === 0) return;
       // Unit box anchored at its base so per-instance Y scale == height.
@@ -241,15 +252,33 @@ export class City {
       });
       inst.instanceMatrix.needsUpdate = true;
       if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
-      inst.name = `towers-${variant}`;
+      inst.name = 'city-tower';
       this.group.add(inst);
       this.disposables.push(geo, mat, textures[variant]!);
       all.push(...records);
+
+      // Towers close to the highway become real obstacles. Generated after
+      // the height clamp so the collision volume matches the visible tower.
+      for (const rec of records) {
+        if (Math.abs(rec.lateral) < 64) {
+          this.collisionBoxes.push({
+            x: rec.x,
+            y: rec.y + rec.height / 2,
+            z: rec.z,
+            halfX: rec.width / 2,
+            halfY: rec.height / 2,
+            halfZ: rec.depth / 2,
+            rotY: rec.rotY,
+            tag: 'building',
+          });
+        }
+      }
 
       // Neon crown strip near the top of every tower.
       const crownGeo = new THREE.BoxGeometry(1, 1.6, 1);
       const crownMat = new THREE.MeshBasicMaterial({ vertexColors: false, toneMapped: false, color: 0xffffff });
       const crowns = new THREE.InstancedMesh(crownGeo, crownMat, records.length);
+      crowns.name = 'city-crown';
       const colors = [new THREE.Color(0x24f0ff), new THREE.Color(0xff2fb9), new THREE.Color(0xa05cff), new THREE.Color(0xb6ff3a)];
       records.forEach((rec, i) => {
         pos.set(rec.x, rec.y + rec.height * randRange(0.72, 0.96), rec.z);
@@ -312,6 +341,7 @@ export class City {
         toneMapped: false,
       });
       const inst = new THREE.InstancedMesh(geo, mat, list.length);
+      inst.name = 'neon-sign';
       const m = new THREE.Matrix4();
       const q = new THREE.Quaternion();
       const up = new THREE.Vector3(0, 1, 0);
@@ -349,6 +379,7 @@ export class City {
         toneMapped: false,
       });
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(70, 18), mat);
+      mesh.name = 'holo';
       const distance = (i / 6) * this.track.totalLength + 40;
       const f = this.track.frameAt(distance);
       const sideSign = i % 2 === 0 ? 1 : -1;
@@ -380,12 +411,12 @@ export class City {
       const f = this.track.frameAt(d);
       for (const sign of [-1, 1]) {
         const p = f.pos.clone().addScaledVector(f.side, sign * 24);
-        p.y = CONFIG.track.groundY;
+        p.y = this.track.groundY;
         q.setFromAxisAngle(up, Math.atan2(f.tangent.x, f.tangent.z));
         m.compose(p, q, new THREE.Vector3(1, 1, 1));
         poles.setMatrixAt(idx, m);
         const head = p.clone();
-        head.y = CONFIG.track.groundY + 12;
+        head.y = this.track.groundY + 12;
         m.compose(head, q, new THREE.Vector3(1, 1, 1));
         heads.setMatrixAt(idx, m);
         idx++;
@@ -429,6 +460,7 @@ export class City {
       metalness: 0.7,
     });
     const inst = new THREE.InstancedMesh(geo, mat, total * 2);
+    inst.name = 'neon-pylon';
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const up = new THREE.Vector3(0, 1, 0);

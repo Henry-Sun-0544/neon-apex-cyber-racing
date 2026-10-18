@@ -1,10 +1,10 @@
 import * as THREE from 'three';
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
-import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { CONFIG } from './Config';
+import { MaterialLibrary } from './MaterialLibrary';
+import { PostProcessingStack } from './PostProcessingStack';
+import { QualityManager } from './QualityManager';
+import type { GameStyle } from './styles/GameStyle';
 import { clamp, damp } from './Utils';
+import { CONFIG } from './Config';
 
 export type CameraMode = 'chase' | 'hood';
 
@@ -17,172 +17,133 @@ export interface CameraTarget {
 }
 
 /**
- * Everything related to rendering: renderer, fog, sky, lights, the chase
- * camera rig and the optional bloom pass (auto-disabled when FPS drops).
+ * Everything related to rendering.
+ *
+ * Round 2 split the old "renderer + fog + sky + bloom" monolith into three
+ * collaborators:
+ *   - `QualityManager`        the budget (presets + automatic degradation),
+ *   - `GameStyle`             the look (sky / lights / fog / grade),
+ *   - `PostProcessingStack`   the effect chain,
+ * leaving SceneManager with the renderer, the camera rig and the frame glue.
+ *
+ * A style switch replaces only the style's own objects and rewrites the post-fx
+ * request, so no gameplay state can be affected.
  */
 export class SceneManager {
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
   readonly renderer: THREE.WebGLRenderer;
+  readonly quality: QualityManager;
+  readonly materials: MaterialLibrary;
+  readonly post: PostProcessingStack;
 
   cameraMode: CameraMode = 'chase';
-  private composer: EffectComposer | null = null;
-  private bloomPass: UnrealBloomPass | null = null;
-  private readonly renderPass: RenderPass;
-  private readonly outputPass: OutputPass;
-  private bloomEnabled: boolean = CONFIG.render.bloom;
+  style: GameStyle;
+
   private shake = 0;
   private readonly shakeOffset = new THREE.Vector3();
   private readonly lookTarget = new THREE.Vector3();
   private readonly desired = new THREE.Vector3();
   private readonly tmp = new THREE.Vector3();
-  private perfTimer = 0;
-  private perfFrames = 0;
-  private downgraded = false;
+  private readonly tmp2 = new THREE.Vector3();
+  private readonly prevCameraPos = new THREE.Vector3();
+  private readonly blurDir = new THREE.Vector2();
+  private readonly sunUv = new THREE.Vector2();
+  private hasSunUv = false;
+  private adaptiveExposure = 1;
+  private elapsed = 0;
 
-  constructor(private readonly canvas: HTMLCanvasElement) {
+  constructor(
+    private readonly canvas: HTMLCanvasElement,
+    quality: QualityManager,
+    style: GameStyle,
+  ) {
+    this.quality = quality;
+    this.style = style;
+    const settings = quality.settings;
+
     this.renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: window.devicePixelRatio < 1.5,
+      antialias: settings.pixelRatio < 1.5,
       powerPreference: 'high-performance',
       stencil: false,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, CONFIG.render.maxPixelRatio));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, settings.pixelRatio));
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // ACES filmic tone mapping is the single most important "photo" ingredient
+    // and is shared by both styles.
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.92;
-    this.renderer.shadowMap.enabled = false; // night city + bloom reads better and runs faster
+    this.renderer.toneMappingExposure = 1;
+    this.renderer.shadowMap.enabled = settings.shadowMapSize > 0;
+    this.renderer.shadowMap.type = settings.shadowSoft ? THREE.VSMShadowMap : THREE.PCFShadowMap;
+    this.renderer.info.autoReset = true;
 
-    this.scene.fog = new THREE.FogExp2(CONFIG.render.fogColor, CONFIG.render.fogDensity);
-    this.scene.background = new THREE.Color(0x05030f);
-
-    this.camera = new THREE.PerspectiveCamera(CONFIG.camera.fov, window.innerWidth / window.innerHeight, 0.2, 3000);
+    this.camera = new THREE.PerspectiveCamera(CONFIG.camera.fov, window.innerWidth / window.innerHeight, 0.24, 6000);
     this.camera.position.set(0, 8, -14);
     this.scene.add(this.camera);
 
-    this.buildSky();
-    this.buildLights();
+    this.materials = new MaterialLibrary(quality);
+    // Attach first: a style receives its environment there, and only then can
+    // it configure shadow maps / light intensities for the quality budget.
+    this.style.attach({
+      scene: this.scene,
+      renderer: this.renderer,
+      camera: this.camera,
+      materials: this.materials,
+      quality: settings,
+    });
+    this.style.setQuality(settings);
 
-    this.renderPass = new RenderPass(this.scene, this.camera);
-    this.outputPass = new OutputPass();
-    this.setupPostProcessing();
+    this.post = new PostProcessingStack(this.renderer, this.scene, this.camera, settings);
+    this.post.setFx(this.style.fxRequest(settings));
+
+    this.prevCameraPos.copy(this.camera.position);
   }
 
-  // ------------------------------------------------------------ setup
+  // -------------------------------------------------------------- quality
 
-  /** Procedural night sky dome with a synthwave gradient, stars and a moon. */
-  private buildSky(): void {
-    const c = document.createElement('canvas');
-    c.width = 1024;
-    c.height = 512;
-    const ctx = c.getContext('2d')!;
-    const grad = ctx.createLinearGradient(0, 0, 0, 512);
-    grad.addColorStop(0, '#07040f');
-    grad.addColorStop(0.35, '#160a33');
-    grad.addColorStop(0.62, '#3a1055');
-    grad.addColorStop(0.78, '#7a1b64');
-    grad.addColorStop(0.9, '#c02a72');
-    grad.addColorStop(1, '#1a0730');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, 1024, 512);
-
-    // Neon haze bands (like distant city glow)
-    for (let i = 0; i < 40; i++) {
-      const y = 260 + Math.random() * 210;
-      ctx.fillStyle = `rgba(${120 + Math.random() * 135},${30 + Math.random() * 80},255,${0.03 + Math.random() * 0.05})`;
-      ctx.fillRect(0, y, 1024, 1 + Math.random() * 3);
-    }
-    // Stars
-    for (let i = 0; i < 700; i++) {
-      const x = Math.random() * 1024;
-      const y = Math.random() * 300;
-      const a = Math.random() * 0.8 + 0.1;
-      const r = Math.random() * 1.4;
-      ctx.fillStyle = `rgba(255,255,255,${a})`;
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    // Moon
-    const moonX = 760;
-    const moonY = 120;
-    const moonGrad = ctx.createRadialGradient(moonX, moonY, 4, moonX, moonY, 90);
-    moonGrad.addColorStop(0, 'rgba(255,236,255,0.95)');
-    moonGrad.addColorStop(0.2, 'rgba(255,180,240,0.5)');
-    moonGrad.addColorStop(1, 'rgba(255,120,220,0)');
-    ctx.fillStyle = moonGrad;
-    ctx.beginPath();
-    ctx.arc(moonX, moonY, 90, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = 'rgba(255,245,255,0.98)';
-    ctx.beginPath();
-    ctx.arc(moonX, moonY, 26, 0, Math.PI * 2);
-    ctx.fill();
-
-    const tex = new THREE.CanvasTexture(c);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.mapping = THREE.EquirectangularReflectionMapping;
-    const sky = new THREE.Mesh(
-      new THREE.SphereGeometry(1900, 32, 20),
-      new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false, toneMapped: false }),
-    );
-    sky.name = 'sky';
-    this.scene.add(sky);
+  /** Applies a new quality budget to every renderer-side consumer. */
+  applyQuality(): void {
+    const settings = this.quality.settings;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, settings.pixelRatio));
+    this.renderer.shadowMap.enabled = settings.shadowMapSize > 0;
+    this.renderer.shadowMap.type = settings.shadowSoft ? THREE.VSMShadowMap : THREE.PCFShadowMap;
+    this.materials.refresh();
+    this.style.setQuality(settings);
+    this.post.setQuality(settings);
+    this.post.setFx(this.style.fxRequest(settings));
   }
 
-  private buildLights(): void {
-    const ambient = new THREE.AmbientLight(0x1a1f3d, 0.55);
-    const hemi = new THREE.HemisphereLight(0x3a2c73, 0x08050f, 0.4);
-    const moon = new THREE.DirectionalLight(0x8f6bff, 0.6);
-    moon.position.set(-220, 320, 140);
-    const rim = new THREE.DirectionalLight(0xff3fa0, 0.28);
-    rim.position.set(180, 120, -260);
-    this.scene.add(ambient, hemi, moon, rim);
+  // ----------------------------------------------------------------- style
+
+  /**
+   * Swaps the active style. Only the style's own sky/lights and the effect
+   * chain are touched: the world graph, the cars and every race timer survive
+   * untouched, which is what makes a mid-race switch safe.
+   */
+  applyStyle(next: GameStyle): void {
+    const settings = this.quality.settings;
+    next.rain = this.style.rain;
+    next.snow = this.style.snow;
+    next.timeOfDay = this.style.timeOfDay;
+    this.style.detach(this.scene);
+    next.attach({
+      scene: this.scene,
+      renderer: this.renderer,
+      camera: this.camera,
+      materials: this.materials,
+      quality: settings,
+    });
+    next.setQuality(settings);
+    this.style = next;
+    this.post.setQuality(settings);
+    this.post.setFx(next.fxRequest(settings));
   }
 
-  private setupPostProcessing(): void {
-    try {
-      const size = new THREE.Vector2(window.innerWidth, window.innerHeight);
-      const composer = new EffectComposer(this.renderer);
-      composer.setSize(size.x, size.y);
-      const bloom = new UnrealBloomPass(
-        size,
-        CONFIG.render.bloomStrength,
-        CONFIG.render.bloomRadius,
-        CONFIG.render.bloomThreshold,
-      );
-      composer.addPass(this.renderPass);
-      composer.addPass(bloom);
-      composer.addPass(this.outputPass);
-      this.composer = composer;
-      this.bloomPass = bloom;
-      this.bloomEnabled = CONFIG.render.bloom;
-    } catch (error) {
-      // Bloom is optional: fall back to plain rendering if the driver refuses.
-      console.warn('[NA:CR] post-processing unavailable, falling back to direct rendering', error);
-      this.composer = null;
-      this.bloomPass = null;
-      this.bloomEnabled = false;
-    }
-  }
-
-  /** Disables bloom + lowers the pixel ratio when the machine cannot keep up. */
-  private monitorPerformance(dt: number): void {
-    if (this.downgraded) return;
-    this.perfTimer += dt;
-    this.perfFrames += 1;
-    if (this.perfTimer < CONFIG.render.perfSampleSeconds) return;
-    const fps = this.perfFrames / this.perfTimer;
-    this.perfTimer = 0;
-    this.perfFrames = 0;
-    if (fps < CONFIG.render.downgradeFps) {
-      this.downgraded = true;
-      this.bloomEnabled = false;
-      if (this.bloomPass) this.bloomPass.enabled = false;
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1));
-      console.info(`[NA:CR] ${fps.toFixed(1)} FPS detected — bloom disabled, pixel ratio lowered.`);
-    }
+  /** Re-applies the current style's effect request (weather/quality drift). */
+  refreshStyleFx(): void {
+    this.post.setFx(this.style.fxRequest(this.quality.settings));
   }
 
   // ------------------------------------------------------------ camera
@@ -203,6 +164,7 @@ export class SceneManager {
     this.camera.position.copy(this.desired);
     this.lookTarget.copy(target.position);
     this.shake = 0;
+    this.prevCameraPos.copy(this.camera.position);
   }
 
   private computeDesired(target: CameraTarget): void {
@@ -212,12 +174,12 @@ export class SceneManager {
       this.desired
         .copy(target.position)
         .addScaledVector(forward, -cfg.chaseDistance)
-        .add(new THREE.Vector3(0, cfg.chaseHeight, 0));
+        .add(this.tmp2.set(0, cfg.chaseHeight, 0));
     } else {
       this.desired
         .copy(target.position)
         .addScaledVector(forward, cfg.hoodDistance)
-        .add(new THREE.Vector3(0, cfg.hoodHeight, 0));
+        .add(this.tmp2.set(0, cfg.hoodHeight, 0));
     }
     // Never dip below the tarmac.
     this.desired.y = Math.max(this.desired.y, target.position.y + 1.1);
@@ -234,7 +196,7 @@ export class SceneManager {
     // Look slightly ahead of the car for a better sense of speed.
     const forward = this.tmp.set(Math.sin(target.yaw), 0, Math.cos(target.yaw));
     const lookAhead = this.cameraMode === 'hood' ? 16 : 8;
-    const desiredLook = new THREE.Vector3()
+    const desiredLook = this.tmp2
       .copy(target.position)
       .addScaledVector(forward, lookAhead)
       .add(new THREE.Vector3(0, 1.5, 0));
@@ -277,9 +239,46 @@ export class SceneManager {
   // ------------------------------------------------------------ render
 
   render(dt: number): void {
-    this.monitorPerformance(dt);
-    if (this.composer && this.bloomEnabled) this.composer.render();
-    else this.renderer.render(this.scene, this.camera);
+    this.elapsed += dt;
+    const degraded = this.quality.sample(dt, this.elapsed);
+    if (degraded) this.applyQuality();
+
+    // The style animates its own sky/lights/weather.
+    this.style.update(dt, this.elapsed, this.camera);
+    // Keep the sun shadow camera on the action (cheap, huge visual win).
+    this.style.updateShadowFocus(this.lookTarget);
+
+    // ------------------------------------------------- motion blur vector
+    this.tmp.subVectors(this.camera.position, this.prevCameraPos);
+    this.prevCameraPos.copy(this.camera.position);
+    // Camera-space delta -> screen-space direction.
+    const local = this.tmp.clone().applyQuaternion(this.camera.quaternion.clone().invert());
+    this.blurDir.set(clamp(local.x * 0.02, -0.06, 0.06), clamp(-local.y * 0.02, -0.06, 0.06));
+
+    // --------------------------------------------------- adaptive exposure
+    const targetExposure = this.style.exposureAdaptation(this.camera);
+    this.adaptiveExposure = damp(this.adaptiveExposure, targetExposure, 1.2, dt);
+
+    // --------------------------------------------------------- god rays UV
+    const sun = this.style.sunDirection();
+    this.hasSunUv = false;
+    if (sun) {
+      const world = this.camera.position.clone().addScaledVector(sun, 3000);
+      const ndc = world.project(this.camera);
+      if (ndc.z < 1 && ndc.x > -1.4 && ndc.x < 1.4 && ndc.y > -1.4 && ndc.y < 1.4) {
+        this.sunUv.set(ndc.x * 0.5 + 0.5, ndc.y * 0.5 + 0.5);
+        this.hasSunUv = true;
+      }
+    }
+
+    this.post.update(dt, {
+      time: this.elapsed,
+      sunUv: this.hasSunUv ? this.sunUv : null,
+      blurDir: this.blurDir,
+      blur: 0,
+      exposure: this.adaptiveExposure,
+    });
+    this.post.render();
   }
 
   resize(): void {
@@ -288,12 +287,22 @@ export class SceneManager {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h, false);
-    this.composer?.setSize(w, h);
-    this.bloomPass?.setSize(w, h);
+    this.post.setSize(w, h);
   }
 
-  /** Current bloom state (used by the debug overlay). */
+  /** Current post-processing summary (used by the debug overlay/HUD). */
   get postProcessingActive(): boolean {
-    return this.composer !== null && this.bloomEnabled;
+    return this.post.usingComposer;
+  }
+
+  get postProcessingSummary(): string {
+    return this.post.describe();
+  }
+
+  /** Releases GPU resources (page teardown / full restart). */
+  dispose(): void {
+    this.style.detach(this.scene);
+    this.post.dispose();
+    this.materials.dispose();
   }
 }

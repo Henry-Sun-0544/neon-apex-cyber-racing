@@ -498,6 +498,89 @@ kbd {
   color: rgba(214, 236, 255, 0.8);
 }
 
+/* ---------------- garage car picker ---------------- */
+.garage-panel {
+  grid-column: 1 / -1;
+}
+
+.garage {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+@media (max-width: 680px) {
+  .garage { grid-template-columns: repeat(2, 1fr); }
+}
+
+.garage-card {
+  padding: 10px 12px;
+  border: 1px solid rgba(160, 92, 255, 0.3);
+  border-radius: 4px;
+  background: rgba(8, 4, 22, 0.55);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-hud);
+  color: #d6ecff;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+}
+
+.garage-card:hover {
+  border-color: rgba(36, 240, 255, 0.7);
+  background: rgba(36, 240, 255, 0.06);
+}
+
+.garage-card.selected {
+  border-color: var(--neon-cyan);
+  box-shadow: 0 0 14px rgba(36, 240, 255, 0.35), inset 0 0 18px rgba(36, 240, 255, 0.08);
+  background: rgba(36, 240, 255, 0.1);
+}
+
+.garage-name {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: #eaf9ff;
+}
+
+.garage-tag {
+  margin: 2px 0 8px;
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: rgba(214, 236, 255, 0.6);
+}
+
+.garage-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: rgba(214, 236, 255, 0.75);
+}
+
+.garage-stat span {
+  width: 34px;
+  flex: none;
+}
+
+.garage-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(160, 92, 255, 0.18);
+  overflow: hidden;
+}
+
+.garage-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta));
+  box-shadow: 0 0 6px rgba(36, 240, 255, 0.6);
+}
+
 .brief b {
   color: var(--neon-lime);
 }
@@ -702,4 +785,268 @@ input[type='range'] {
 
 .results-actions .btn {
   flex: 1;
+}
+
+/* =============================================================
+   Round 2 — style themes, mode pickers, pause menu, loading veil
+   ============================================================= */
+
+/*
+ * The whole UI is driven by the same CSS custom properties, so switching the
+ * game style re-skins the interface too: neon violet/cyan/pink for cyberpunk,
+ * desaturated blue/grey/orange for the realistic look.
+ */
+body[data-style='realistic'] {
+  --neon-cyan: #3fa9ff;
+  --neon-magenta: #ff8a3d;
+  --neon-violet: #7e93a8;
+  --neon-lime: #c3ccd6;
+  --neon-amber: #ffc07a;
+  --bg-deep: #0b0e13;
+  --bg-panel: rgba(20, 24, 31, 0.82);
+  --grid-line: rgba(190, 206, 224, 0.12);
+}
+
+body[data-style='realistic'] #app::after {
+  background: radial-gradient(ellipse at 50% 52%, rgba(0, 0, 0, 0) 50%, rgba(0, 0, 0, 0.42) 100%);
+  mix-blend-mode: normal;
+  opacity: 0.7;
+}
+
+body[data-style='realistic'] .title-neon {
+  text-shadow: 0 0 6px #fff, 0 0 18px rgba(63, 169, 255, 0.65), 0 0 40px rgba(255, 138, 61, 0.35);
+  animation: none;
+}
+
+body[data-style='realistic'] .scanlines {
+  opacity: 0.15;
+  background: repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0px, rgba(255, 255, 255, 0.03) 1px, rgba(0, 0, 0, 0) 3px, rgba(0, 0, 0, 0) 8px);
+}
+
+body[data-style='realistic'] .overlay {
+  background:
+    radial-gradient(ellipse at 50% 40%, rgba(63, 169, 255, 0.12), rgba(0, 0, 0, 0) 62%),
+    linear-gradient(180deg, rgba(8, 11, 15, 0.94), rgba(4, 6, 9, 0.98));
+}
+
+/* ------------------------------------------------------------ option rows */
+
+.option-block {
+  margin-bottom: 10px;
+}
+
+.option-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: var(--neon-cyan);
+  opacity: 0.95;
+  margin-bottom: 5px;
+}
+
+.option-hint {
+  font-size: 10px;
+  color: var(--neon-amber);
+  opacity: 0.9;
+  letter-spacing: 1px;
+}
+
+.option-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.option-btn {
+  flex: 1 1 auto;
+  min-width: 72px;
+  padding: 7px 8px;
+  border: 1px solid rgba(160, 92, 255, 0.4);
+  border-radius: 3px;
+  background: rgba(10, 6, 26, 0.7);
+  color: #cfe9ff;
+  font-family: var(--font-hud);
+  font-size: 11px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s, color 0.15s, background 0.15s;
+}
+
+.option-btn:hover {
+  border-color: var(--neon-cyan);
+  color: #ffffff;
+  box-shadow: 0 0 12px rgba(36, 240, 255, 0.35);
+}
+
+.option-btn.selected {
+  border-color: var(--neon-cyan);
+  background: linear-gradient(180deg, rgba(36, 240, 255, 0.22), rgba(255, 47, 185, 0.16));
+  color: #ffffff;
+  box-shadow: 0 0 16px rgba(36, 240, 255, 0.4), inset 0 0 12px rgba(255, 47, 185, 0.2);
+}
+
+.option-btn small {
+  display: block;
+  font-size: 9px;
+  opacity: 0.75;
+  letter-spacing: 0;
+  margin-top: 2px;
+}
+
+.option-note {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: rgba(210, 230, 255, 0.7);
+}
+
+.option-note kbd {
+  padding: 0 4px;
+  border: 1px solid rgba(36, 240, 255, 0.4);
+  border-radius: 3px;
+  font-size: 10px;
+}
+
+/* --------------------------------------------------------- HUD style chips */
+
+.hud-chips {
+  position: absolute;
+  left: 14px;
+  bottom: 54px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  max-width: 46vw;
+}
+
+.chip {
+  padding: 3px 9px;
+  border: 1px solid rgba(36, 240, 255, 0.35);
+  border-radius: 999px;
+  background: rgba(6, 3, 18, 0.6);
+  font-size: 10px;
+  letter-spacing: 1.6px;
+  color: #d8f4ff;
+  text-shadow: 0 0 8px rgba(36, 240, 255, 0.5);
+}
+
+.chip--style {
+  border-color: var(--neon-cyan);
+  color: #ffffff;
+}
+
+.chip--quality {
+  border-color: var(--neon-amber);
+  text-shadow: 0 0 8px rgba(255, 179, 71, 0.6);
+}
+
+.chip--mode {
+  border-color: var(--neon-magenta);
+  text-shadow: 0 0 8px rgba(255, 47, 185, 0.6);
+}
+
+.chip--degraded {
+  border-color: #ff6b6b;
+  color: #ffd9d9;
+  animation: chipPulse 1.6s infinite;
+}
+
+@keyframes chipPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* ----------------------------------------------------------- pause menu */
+
+.overlay--dark {
+  background: linear-gradient(180deg, rgba(3, 2, 8, 0.86), rgba(1, 1, 4, 0.94));
+  z-index: 30;
+  backdrop-filter: blur(3px);
+}
+
+.pause-card {
+  width: min(720px, 94vw);
+}
+
+.pause-sub {
+  margin: -8px 0 16px;
+  text-align: center;
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: rgba(210, 230, 255, 0.72);
+}
+
+.pause-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 18px;
+  margin-bottom: 14px;
+}
+
+@media (max-width: 680px) {
+  .pause-grid { grid-template-columns: 1fr; }
+}
+
+.pause-state {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid rgba(36, 240, 255, 0.25);
+  border-radius: 4px;
+  background: rgba(8, 4, 22, 0.55);
+  font-size: 12px;
+  line-height: 1.8;
+  letter-spacing: 1px;
+  color: #e2f4ff;
+}
+
+.pause-state b {
+  color: var(--neon-cyan);
+}
+
+/* ------------------------------------------------------- loading veil */
+
+#loading .loading-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 34px 46px;
+  border: 1px solid rgba(36, 240, 255, 0.35);
+  border-radius: 6px;
+  background: rgba(6, 3, 18, 0.86);
+  box-shadow: 0 0 60px rgba(160, 92, 255, 0.35);
+}
+
+.loading-ring {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  border: 3px solid rgba(36, 240, 255, 0.18);
+  border-top-color: var(--neon-cyan);
+  border-right-color: var(--neon-magenta);
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading-text {
+  font-size: 15px;
+  letter-spacing: 3px;
+  color: #ffffff;
+  text-shadow: 0 0 14px rgba(36, 240, 255, 0.6);
+}
+
+.loading-sub {
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: rgba(210, 230, 255, 0.7);
+}
+
+/* The garage panel is tall: make it span the row on narrow layouts. */
+@media (max-width: 900px) {
+  .garage-panel { grid-column: 1 / -1; }
 }

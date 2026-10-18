@@ -38,12 +38,35 @@ export class AudioManager {
   private muted = false;
   private started = false;
 
+  /**
+   * Round 2 audio styles.
+   *  - cyberpunk: the synthwave sequencer (Round 1) plus a neon pad.
+   *  - realistic: a procedural city ambience bed (traffic rumble, air, rain)
+   *    and no sequenced music, matching the realistic presentation.
+   */
+  private styleId: 'cyberpunk' | 'realistic' = 'cyberpunk';
+  private ambientSource: AudioBufferSourceNode | null = null;
+  private ambientAir: AudioBufferSourceNode | null = null;
+  private ambientGain: GainNode | null = null;
+  private rainSource: AudioBufferSourceNode | null = null;
+  private rainGain: GainNode | null = null;
+  private ambientPlaying = false;
+  /** Last requested precipitation amount (0..1) for the rain layer. */
+  private rainAmount = 0;
+
   // --------------------------------------------------------------- lifecycle
 
   /** Must be called from a user gesture (click) to satisfy autoplay policies. */
   async init(): Promise<void> {
     if (this.ctx) {
-      if (this.ctx.state === 'suspended') await this.ctx.resume();
+      // Never await resume(): Chrome keeps an AudioContext suspended until a
+      // user gesture, and awaiting it here would stall any restart that is not
+      // triggered by a click (R hotkey, map-mode switch, automated harness).
+      if (this.ctx.state === 'suspended') {
+        void this.ctx.resume().catch(() => {
+          /* still suspended: the game keeps running silently */
+        });
+      }
       return;
     }
     const Ctor: typeof AudioContext =
@@ -151,7 +174,29 @@ export class AudioManager {
     [98.0, 146.83, 196.0], // G2  D3  G3
   ];
 
+  /** Switches the whole audio identity (called on every style change). */
+  setStyle(style: 'cyberpunk' | 'realistic'): void {
+    if (this.styleId === style) return;
+    this.styleId = style;
+    if (!this.ctx) return;
+    if (style === 'realistic') {
+      this.stopMusic();
+      this.startAmbient();
+    } else {
+      this.stopAmbient();
+      this.startMusic();
+    }
+  }
+
+  get style(): 'cyberpunk' | 'realistic' {
+    return this.styleId;
+  }
+
   startMusic(): void {
+    if (this.styleId === 'realistic') {
+      this.startAmbient();
+      return;
+    }
     if (!this.ctx || !this.musicGain || this.musicPlaying) return;
     this.musicPlaying = true;
     this.step = 0;
@@ -164,6 +209,107 @@ export class AudioManager {
     if (this.schedulerId !== null) {
       window.clearInterval(this.schedulerId);
       this.schedulerId = null;
+    }
+  }
+
+  /**
+   * Procedural city ambience: a filtered noise "rumble" bed, a thin air layer
+   * and a rain hiss whose level follows the realistic style's precipitation.
+   * This replaces the synthwave loop in realistic mode.
+   */
+  startAmbient(): void {
+    if (!this.ctx || !this.master || !this.noiseBuffer || this.ambientPlaying) return;
+    const ctx = this.ctx;
+    this.ambientPlaying = true;
+
+    this.ambientGain = ctx.createGain();
+    this.ambientGain.gain.value = 0.0;
+    this.ambientGain.connect(this.master);
+    // Fade in so switching styles mid-race never clicks.
+    this.ambientGain.gain.setTargetAtTime(0.5, ctx.currentTime, 0.8);
+
+    const rumble = ctx.createBufferSource();
+    rumble.buffer = this.noiseBuffer;
+    rumble.loop = true;
+    const lowpass = ctx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = 320;
+    lowpass.Q.value = 0.6;
+    rumble.connect(lowpass).connect(this.ambientGain);
+    rumble.start();
+    this.ambientSource = rumble;
+
+    const air = ctx.createBufferSource();
+    air.buffer = this.noiseBuffer;
+    air.loop = true;
+    air.playbackRate.value = 0.83;
+    const band = ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.frequency.value = 1500;
+    band.Q.value = 0.5;
+    const airGain = ctx.createGain();
+    airGain.gain.value = 0.11;
+    air.connect(band).connect(airGain).connect(this.ambientGain);
+    air.start();
+    this.ambientAir = air;
+
+    const rain = ctx.createBufferSource();
+    rain.buffer = this.noiseBuffer;
+    rain.loop = true;
+    rain.playbackRate.value = 1.31;
+    const high = ctx.createBiquadFilter();
+    high.type = 'highpass';
+    high.frequency.value = 1100;
+    const rainG = ctx.createGain();
+    rainG.gain.value = 0;
+    rain.connect(high).connect(rainG).connect(this.ambientGain);
+    rain.start();
+    this.rainSource = rain;
+    this.rainGain = rainG;
+    this.setRain(this.rainAmount);
+
+    // Release the nodes when the page unloads.
+    this.ambientNodes = [rumble, air, rain, lowpass, band, airGain, high, rainG, this.ambientGain];
+  }
+
+  private ambientNodes: AudioNode[] = [];
+
+  stopAmbient(): void {
+    if (!this.ambientPlaying) return;
+    this.ambientPlaying = false;
+    const ctx = this.ctx;
+    if (ctx && this.ambientGain) this.ambientGain.gain.setTargetAtTime(0, ctx.currentTime, 0.25);
+    const sources = [this.ambientSource, this.ambientAir, this.rainSource];
+    for (const src of sources) {
+      try {
+        src?.stop(ctx ? ctx.currentTime + 0.6 : 0);
+      } catch {
+        /* already stopped */
+      }
+    }
+    // Fully detach after the fade so no node stays in the graph.
+    window.setTimeout(() => {
+      for (const node of this.ambientNodes) {
+        try {
+          node.disconnect();
+        } catch {
+          /* ignore */
+        }
+      }
+      this.ambientNodes = [];
+    }, 800);
+    this.ambientSource = null;
+    this.ambientAir = null;
+    this.rainSource = null;
+    this.rainGain = null;
+    this.ambientGain = null;
+  }
+
+  /** Rain loudness (0..1) driven by the realistic style's weather. */
+  setRain(amount: number): void {
+    this.rainAmount = clamp(amount, 0, 1);
+    if (this.rainGain && this.ctx) {
+      this.rainGain.gain.setTargetAtTime(this.rainAmount * 0.16, this.ctx.currentTime, 0.4);
     }
   }
 

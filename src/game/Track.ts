@@ -1,51 +1,16 @@
 import * as THREE from 'three';
 import { CONFIG } from './Config';
-import { clamp, makeRng, randRange } from './Utils';
+import { makeRng, randRange } from './Utils';
+import type { RaceWorld } from './world/RaceWorld';
+import {
+  SplinePath,
+  type BoostPad,
+  type Checkpoint,
+  type TrackProjection,
+  type TrackSample,
+} from './world/SplinePath';
 
-/** One evenly spaced sample of the track centre line. */
-export interface TrackSample {
-  /** Centre-line position. */
-  pos: THREE.Vector3;
-  /** Normalised forward direction. */
-  tangent: THREE.Vector3;
-  /** Right-hand vector (tangent x up). */
-  side: THREE.Vector3;
-  /** Up vector, orthogonalised. */
-  normal: THREE.Vector3;
-  /** Arc-length distance from the start/finish line. */
-  distance: number;
-}
-
-/** A speed pad painted on the road. */
-export interface BoostPad {
-  distance: number;
-  lateral: number;
-  halfLength: number;
-  halfWidth: number;
-  mesh: THREE.Mesh;
-}
-
-/** Check-point gate (visual only, detection is distance based). */
-export interface Checkpoint {
-  distance: number;
-  mesh: THREE.Object3D;
-}
-
-/** Result of projecting a world position onto the track centre line. */
-export interface TrackProjection {
-  /** Sample index nearest to the query point. */
-  index: number;
-  /** Arc-length distance of the projection. */
-  distance: number;
-  /** Signed lateral offset (positive = right hand side of travel). */
-  lateral: number;
-  /** Height of the road at that point. */
-  height: number;
-  /** Forward tangent at the projection. */
-  tangent: THREE.Vector3;
-  /** Right vector at the projection. */
-  side: THREE.Vector3;
-}
+export type { TrackSample, BoostPad, Checkpoint, TrackProjection } from './world/SplinePath';
 
 /**
  * Procedural closed-loop elevated highway.
@@ -55,57 +20,41 @@ export interface TrackProjection {
  * parameterisation exposed by this class, so the road ribbon and the logic can
  * never drift apart.
  */
-export class Track {
-  readonly group = new THREE.Group();
-  readonly halfWidth = CONFIG.track.halfWidth;
-  readonly samples: TrackSample[] = [];
-  readonly totalLength: number;
-  readonly checkpoints: Checkpoint[] = [];
-  readonly boostPads: BoostPad[] = [];
+export class Track extends SplinePath implements RaceWorld {
+  readonly id = 'circuit' as const;
+  readonly label = 'CIRCUIT / 赛道';
   readonly curve: THREE.CatmullRomCurve3;
-  /** Flattened XZ polyline (x,y,z triplets) used by the minimap. */
-  readonly minimapPoints: number[] = [];
   /** Meshes whose material uses vertex colours and must be disposed on reset. */
   private disposables: Array<THREE.BufferGeometry> = [];
   private readonly rng = makeRng(20261006);
 
   constructor() {
+    super();
     // ---------------------------------------------------------------- curve
     const controlPoints: THREE.Vector3[] = [];
-    const segments = 18;
+    const segments = 26;
     for (let i = 0; i < segments; i++) {
       const a = (i / segments) * Math.PI * 2;
-      // Two harmonics create a proper circuit silhouette (long straights + hairpins).
-      const radius = 236 + Math.sin(a * 3) * 52 + Math.cos(a * 2 + 1.15) * 38;
-      const y = Math.sin(a * 2 + 0.4) * CONFIG.track.elevation + Math.cos(a * 3) * CONFIG.track.elevation * 0.45;
+      // Three harmonics: long straights, hairpins and an extra S-bend layer
+      // from the 5th harmonic (verified non-self-intersecting — see
+      // tools/validate-track.mjs before changing these numbers).
+      const radius = 236 + Math.sin(a * 3) * 52 + Math.cos(a * 2 + 1.15) * 38 + Math.sin(a * 5 + 0.8) * 16;
+      const y =
+        Math.sin(a * 2 + 0.4) * CONFIG.track.elevation +
+        Math.cos(a * 3) * CONFIG.track.elevation * 0.45 +
+        Math.sin(a * 4 + 1.3) * CONFIG.track.elevation * 0.3;
       controlPoints.push(new THREE.Vector3(Math.cos(a) * radius, y, Math.sin(a) * radius));
     }
     this.curve = new THREE.CatmullRomCurve3(controlPoints, true, 'catmullrom', 0.5);
+    this.halfWidth = CONFIG.track.halfWidth;
 
     // ------------------------------------------------- evenly spaced samples
-    const count = CONFIG.track.samples;
-    const pts = this.curve.getSpacedPoints(count); // count + 1 points, last == first
-    let distance = 0;
-    for (let i = 0; i < count; i++) {
-      const pos = pts[i]!.clone();
-      const next = pts[(i + 1) % count]!;
-      const prev = pts[(i - 1 + count) % count]!;
-      const tangent = next.clone().sub(prev);
-      if (tangent.lengthSq() < 1e-8) tangent.set(0, 0, 1);
-      tangent.normalize();
-      const side = new THREE.Vector3().crossVectors(tangent, new THREE.Vector3(0, 1, 0)).normalize();
-      if (side.lengthSq() < 0.5) side.set(1, 0, 0);
-      const normal = new THREE.Vector3().crossVectors(side, tangent).normalize();
-      this.samples.push({ pos, tangent, side, normal, distance });
-      distance += pos.distanceTo(next);
-    }
-    this.totalLength = distance;
+    this.buildSamples(this.curve, CONFIG.track.samples);
 
-    // Minimap outline
-    for (let i = 0; i < count; i += 4) {
-      const s = this.samples[i]!;
-      this.minimapPoints.push(s.pos.x, s.pos.y, s.pos.z);
-    }
+    // Ground sits 1.5 m below the deepest deck underside.
+    let minY = Infinity;
+    for (const s of this.samples) minY = Math.min(minY, s.pos.y);
+    this.groundY = minY - CONFIG.track.skirtDepth - 1.5;
 
     this.buildRoad();
     this.buildNeonEdges();
@@ -115,125 +64,8 @@ export class Track {
     this.buildStartLine();
   }
 
-  // ============================================================ public API
-
-  /** Sample index for a given arc-length distance (wrapped). */
-  indexAt(distance: number): number {
-    const n = this.samples.length;
-    const t = ((distance % this.totalLength) + this.totalLength) % this.totalLength;
-    return Math.min(n - 1, Math.floor((t / this.totalLength) * n));
-  }
-
-  /** Interpolated frame at an arc-length distance (wrapped). */
-  frameAt(distance: number): { pos: THREE.Vector3; tangent: THREE.Vector3; side: THREE.Vector3 } {
-    const n = this.samples.length;
-    const wrapped = ((distance % this.totalLength) + this.totalLength) % this.totalLength;
-    const f = (wrapped / this.totalLength) * n;
-    const i0 = Math.floor(f) % n;
-    const i1 = (i0 + 1) % n;
-    const t = f - Math.floor(f);
-    const a = this.samples[i0]!;
-    const b = this.samples[i1]!;
-    return {
-      pos: a.pos.clone().lerp(b.pos, t),
-      tangent: a.tangent.clone().lerp(b.tangent, t).normalize(),
-      side: a.side.clone().lerp(b.side, t).normalize(),
-    };
-  }
-
-  /** World position on the driving line at `distance` with a lateral offset. */
-  pointAt(distance: number, lateral = 0, height = 0): THREE.Vector3 {
-    const f = this.frameAt(distance);
-    return f.pos.addScaledVector(f.side, lateral).addScaledVector(new THREE.Vector3(0, 1, 0), height);
-  }
-
-  /**
-   * Project a world position onto the centre line.
-   * Uses a windowed search around `hintIndex` so it stays O(1) per frame.
-   */
-  project(point: THREE.Vector3, hintIndex = -1): TrackProjection {
-    const n = this.samples.length;
-    let bestIndex = 0;
-    let bestDist = Infinity;
-
-    if (hintIndex >= 0) {
-      const window = 70;
-      for (let k = -window; k <= window; k++) {
-        const i = (hintIndex + k + n) % n;
-        const d = this.samples[i]!.pos.distanceToSquared(point);
-        if (d < bestDist) {
-          bestDist = d;
-          bestIndex = i;
-        }
-      }
-    } else {
-      // Coarse global pass then local refine.
-      for (let i = 0; i < n; i += 8) {
-        const d = this.samples[i]!.pos.distanceToSquared(point);
-        if (d < bestDist) {
-          bestDist = d;
-          bestIndex = i;
-        }
-      }
-      for (let k = -8; k <= 8; k++) {
-        const i = (bestIndex + k + n) % n;
-        const d = this.samples[i]!.pos.distanceToSquared(point);
-        if (d < bestDist) {
-          bestDist = d;
-          bestIndex = i;
-        }
-      }
-    }
-
-    const s = this.samples[bestIndex]!;
-    const rel = point.clone().sub(s.pos);
-    // Segment length between samples (uniform spacing).
-    const segLen = this.totalLength / n;
-    const along = clamp(rel.dot(s.tangent), -segLen, segLen);
-    const lateral = rel.dot(s.side);
-    return {
-      index: bestIndex,
-      distance: s.distance + along,
-      lateral,
-      height: s.pos.y,
-      tangent: s.tangent.clone(),
-      side: s.side.clone(),
-    };
-  }
-
-  /** Grid slots for the starting pack: `[distance, lateral]` pairs. */
-  startSlots(): Array<[number, number]> {
-    const slots: Array<[number, number]> = [];
-    const rows = 2;
-    const perRow = 3;
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < perRow; c++) {
-        const lateral = (c - (perRow - 1) / 2) * 6.2;
-        slots.push([this.totalLength - 12 - r * 9.5, lateral]);
-      }
-    }
-    return slots;
-  }
-
-  /** True when the position sits on one of the speed pads (pad coordinates). */
-  padAt(distance: number, lateral: number): BoostPad | null {
-    for (const pad of this.boostPads) {
-      const dDelta = Math.abs(this.shortestDelta(distance, pad.distance));
-      if (dDelta < pad.halfLength && Math.abs(lateral - pad.lateral) < pad.halfWidth) return pad;
-    }
-    return null;
-  }
-
-  /** Signed shortest distance from a to b along the loop. */
-  shortestDelta(a: number, b: number): number {
-    let d = (b - a) % this.totalLength;
-    if (d > this.totalLength / 2) d -= this.totalLength;
-    if (d < -this.totalLength / 2) d += this.totalLength;
-    return d;
-  }
-
   /** Dispose all generated geometry. */
-  dispose(): void {
+  override dispose(): void {
     for (const g of this.disposables) g.dispose();
     this.disposables = [];
   }
@@ -356,13 +188,18 @@ export class Track {
     // Under-side + skirts so the highway reads as a solid elevated slab.
     const bottom = this.buildStrip(hw, -CONFIG.track.skirtDepth, -hw, -CONFIG.track.skirtDepth, 40);
     const bottomMat = new THREE.MeshStandardMaterial({ color: 0x0a0918, roughness: 0.95, metalness: 0.1 });
-    this.group.add(new THREE.Mesh(bottom, bottomMat));
+    const underside = new THREE.Mesh(bottom, bottomMat);
+    underside.name = 'road-underside';
+    this.group.add(underside);
 
     const skirtMat = new THREE.MeshStandardMaterial({ color: 0x191631, roughness: 0.8, metalness: 0.35 });
     const skirtL = this.buildStrip(-hw, 0, -hw, -CONFIG.track.skirtDepth, 40);
     const skirtR = this.buildStrip(hw, -CONFIG.track.skirtDepth, hw, 0, 40);
-    this.group.add(new THREE.Mesh(skirtL, skirtMat));
-    this.group.add(new THREE.Mesh(skirtR, skirtMat));
+    for (const geo of [skirtL, skirtR]) {
+      const skirt = new THREE.Mesh(geo, skirtMat);
+      skirt.name = 'road-skirt';
+      this.group.add(skirt);
+    }
   }
 
   /** Bright neon trims + guard rails, all vertex-coloured so bloom picks them up. */
@@ -373,8 +210,11 @@ export class Track {
     const rightGeo = this.buildStrip(hw - 0.9, 0.035, hw - 0.15, 0.035, 10, () => new THREE.Color(0x66f6ff));
     const leftGeo = this.buildStrip(-hw + 0.15, 0.035, -hw + 0.9, 0.035, 10, () => new THREE.Color(0xff7ad4));
     const edgeMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
-    this.group.add(new THREE.Mesh(rightGeo, edgeMat));
-    this.group.add(new THREE.Mesh(leftGeo, edgeMat));
+    for (const geo of [rightGeo, leftGeo]) {
+      const strip = new THREE.Mesh(geo, edgeMat);
+      strip.name = 'neon-strip';
+      this.group.add(strip);
+    }
 
     // Guard rail bars: alternating neon colour per 90 m block.
     const railGeoLeft = this.buildStrip(-hw + 0.35, 1.05, -hw + 0.35, 1.45, 12, (i, s) => {
@@ -394,10 +234,11 @@ export class Track {
       return new THREE.Color(block % 2 === 0 ? 0x24f0ff : 0x5cffd0);
     });
     const railMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, side: THREE.DoubleSide });
-    this.group.add(new THREE.Mesh(railGeoLeft, railMat));
-    this.group.add(new THREE.Mesh(railGeoTop, railMat));
-    this.group.add(new THREE.Mesh(railGeoRight, railMat));
-    this.group.add(new THREE.Mesh(railGeoTopR, railMat));
+    for (const geo of [railGeoLeft, railGeoTop, railGeoRight, railGeoTopR]) {
+      const rail = new THREE.Mesh(geo, railMat);
+      rail.name = 'neon-strip';
+      this.group.add(rail);
+    }
 
     // Guard rail posts (instanced) for parallax speed cues.
     const postGeo = new THREE.BoxGeometry(0.22, 1.55, 0.22);
@@ -430,13 +271,17 @@ export class Track {
     }
     posts.count = idx;
     posts.instanceMatrix.needsUpdate = true;
+    posts.name = 'rail-post';
     this.group.add(posts);
 
     // Under-glow strips below the skirt for the "floating highway" look.
     const underL = this.buildStrip(-hw + 0.3, -CONFIG.track.skirtDepth + 0.4, -hw + 1.3, -CONFIG.track.skirtDepth + 0.4, 14, () => new THREE.Color(0x2a7bff));
     const underR = this.buildStrip(hw - 1.3, -CONFIG.track.skirtDepth + 0.4, hw - 0.3, -CONFIG.track.skirtDepth + 0.4, 14, () => new THREE.Color(0x9a2bff));
-    this.group.add(new THREE.Mesh(underL, edgeMat));
-    this.group.add(new THREE.Mesh(underR, edgeMat));
+    for (const geo of [underL, underR]) {
+      const under = new THREE.Mesh(geo, edgeMat);
+      under.name = 'neon-strip';
+      this.group.add(under);
+    }
   }
 
   /** Support pillars from the road down to the city floor. */
@@ -448,7 +293,7 @@ export class Track {
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const up = new THREE.Vector3(0, 1, 0);
-    const groundY = CONFIG.track.groundY;
+    const groundY = this.groundY;
     for (let i = 0; i < count; i++) {
       const d = (i / count) * this.totalLength;
       const f = this.frameAt(d);
@@ -462,6 +307,7 @@ export class Track {
       inst.setMatrixAt(i, m);
     }
     inst.instanceMatrix.needsUpdate = true;
+    inst.name = 'road-pillar';
     this.group.add(inst);
   }
 
@@ -518,6 +364,7 @@ export class Track {
         .addScaledVector(f.side, lateral)
         .addScaledVector(normal, 0.06);
       mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(f.side, f.tangent, normal));
+      mesh.name = 'boost-pad';
       mesh.renderOrder = 2;
       this.group.add(mesh);
       this.boostPads.push({ distance, lateral, halfLength, halfWidth, mesh });
@@ -547,7 +394,7 @@ export class Track {
       bar.position.y += 7.3;
       bar.rotation.y = Math.atan2(f.tangent.x, f.tangent.z);
       gate.add(bar);
-      gate.name = `checkpoint-${i}`;
+      gate.name = 'checkpoint-gate';
       this.group.add(gate);
       this.checkpoints.push({ distance, mesh: gate });
     }
@@ -572,10 +419,15 @@ export class Track {
     const geo = new THREE.PlaneGeometry(this.halfWidth * 2, 6);
     const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.7, metalness: 0.1 });
     const f = this.frameAt(0);
+    const normal = new THREE.Vector3().crossVectors(f.side, f.tangent).normalize();
     const line = new THREE.Mesh(geo, mat);
-    line.position.copy(f.pos).addScaledVector(new THREE.Vector3(0, 1, 0), 0.05);
-    line.rotation.x = -Math.PI / 2;
-    line.rotation.z = -Math.atan2(f.tangent.x, f.tangent.z);
+    line.name = 'start-line';
+    // Orient with the track frame: the 6 m axis follows the driving direction
+    // exactly and the plane sits parallel to the road, so it neither skews on
+    // diagonal segments nor clips into the deck on slopes (same fix as the
+    // boost pads).
+    line.position.copy(f.pos).addScaledVector(normal, 0.06);
+    line.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(f.side, f.tangent, normal));
     this.group.add(line);
 
     // Banner
@@ -599,6 +451,7 @@ export class Track {
     btex.colorSpace = THREE.SRGBColorSpace;
     const bmat = new THREE.MeshBasicMaterial({ map: btex, transparent: true, toneMapped: false, side: THREE.DoubleSide });
     const banner = new THREE.Mesh(new THREE.PlaneGeometry(26, 6.5), bmat);
+    banner.name = 'neon-sign';
     banner.position.copy(f.pos).addScaledVector(new THREE.Vector3(0, 1, 0), 10.2);
     // +PI so the readable face points back down the track towards the drivers.
     banner.rotation.y = Math.atan2(f.tangent.x, f.tangent.z) + Math.PI;

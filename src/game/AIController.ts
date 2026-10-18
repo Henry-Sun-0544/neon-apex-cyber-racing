@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { CONFIG } from './Config';
-import type { Track } from './Track';
+import { CONFIG, GARAGE, type CarId } from './Config';
+import type { RaceWorld } from './world/RaceWorld';
 import type { VehicleBase, VehicleInput } from './VehicleBase';
 import { angleDelta, clamp } from './Utils';
 
@@ -9,6 +9,8 @@ export interface AIProfile {
   name: string;
   bodyColor: number;
   accentColor: number;
+  /** Which garage car this driver races (stats + silhouette). */
+  carId: CarId;
   /** Multiplier applied to the target speed (skill). */
   speedScale: number;
   /** Preferred side of the road (-1 left .. +1 right). */
@@ -62,6 +64,9 @@ export function createProfiles(count: number, seed = 1337): AIProfile[] {
       name: NAMES[i % NAMES.length]!,
       bodyColor: BODY_COLORS[i % BODY_COLORS.length]!,
       accentColor: ACCENT_COLORS[i % ACCENT_COLORS.length]!,
+      // Cycle through the garage so the field mixes chassis: muscle cars
+      // launch hard but cap out low, GT-Rs own the straights, etc.
+      carId: GARAGE[i % GARAGE.length]!.id,
       // Spread skill from slowest to fastest, then shuffle a little.
       speedScale: clamp(
         CONFIG.ai.speedScaleMin + t * (CONFIG.ai.speedScaleMax - CONFIG.ai.speedScaleMin) + (rnd() - 0.5) * 0.05,
@@ -92,8 +97,13 @@ export class AIController {
 
   constructor(
     readonly profile: AIProfile,
-    private readonly track: Track,
+    private track: RaceWorld,
   ) {}
+
+  /** Re-targets the driver at a different race route. */
+  setTrack(track: RaceWorld): void {
+    this.track = track;
+  }
 
   /** Compute this frame's inputs for the given vehicle. */
   update(dt: number, vehicle: VehicleBase, view: AIWorldView): VehicleInput {
@@ -131,7 +141,7 @@ export class AIController {
     this.laneOffset += clamp(targetLane - this.laneOffset, -6 * dt, 6 * dt);
 
     // --------------------------------------------------------- steering
-    const lookAhead = cfg.lookAhead * (0.55 + clamp(Math.abs(vehicle.speed) / CONFIG.car.maxSpeed, 0, 1) * 0.75);
+    const lookAhead = cfg.lookAhead * (0.55 + clamp(Math.abs(vehicle.speed) / vehicle.topSpeed, 0, 1) * 0.75);
     const targetPoint = this.track.pointAt(d + lookAhead, this.laneOffset);
     this.tmp.copy(targetPoint).sub(vehicle.position);
     const desiredYaw = Math.atan2(this.tmp.x, this.tmp.z);
@@ -141,7 +151,9 @@ export class AIController {
     // ------------------------------------------------------ speed logic
     const speedScale = this.profile.speedScale * (1 - clamp(curvature * 0.7, 0, 0.45));
     const rubber = clamp((view.playerProgress - view.selfProgress) / view.totalLength, -1, 1) * cfg.rubberBand;
-    let targetSpeed = CONFIG.car.maxSpeed * clamp(speedScale + rubber, 0.5, 1.04);
+    // Target speed is relative to THIS car's own top speed, so a muscle car
+    // caps out lower than a GT-R even with the same driver skill.
+    let targetSpeed = vehicle.topSpeed * clamp(speedScale + rubber, 0.5, 1.04);
 
     // Occasional mistakes keep the field dynamic.
     if (this.mistakeTimer > 0) {

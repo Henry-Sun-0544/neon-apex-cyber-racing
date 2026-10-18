@@ -292,7 +292,11 @@ export class ParticleSystem {
 
   // ---------------------------------------------------------------- update
 
-  update(dt: number): void {
+  update(dt: number, cameraPosition?: THREE.Vector3): void {
+    if (cameraPosition) {
+      this.precipCentre.copy(cameraPosition);
+      this.updatePrecipitation(dt, cameraPosition);
+    }
     for (const key of Object.keys(this.pools) as PoolKind[]) {
       const pool = this.pools[key];
       const posAttr = pool.geometry.getAttribute('position') as THREE.BufferAttribute;
@@ -356,6 +360,161 @@ export class ParticleSystem {
       for (let i = 0; i < pool.count; i++) pool.positions[i * 3 + 1] = -9999;
       pool.cursor = 0;
     }
+  }
+
+  // ------------------------------------------------------- precipitation
+
+  /**
+   * Rain / snow layer.
+   *
+   * A single recycled `Points` cloud that follows the camera: drops wrap inside
+   * a box around the viewer instead of being spawned, so a downpour costs one
+   * draw call and zero allocations. Rain falls fast with a wind slant and a
+   * vertical streak sprite; snow drifts slowly with a soft dot.
+   */
+  private buildPrecipitation(): void {
+    const count = 2600;
+    const positions = new Float32Array(count * 3);
+    const speeds = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      positions[i * 3] = (Math.random() - 0.5) * this.precipSize;
+      positions[i * 3 + 1] = Math.random() * this.precipSize;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * this.precipSize;
+      speeds[i] = 0.7 + Math.random() * 0.6;
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('aSpeed', new THREE.BufferAttribute(speeds, 1));
+    geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        uMap: { value: this.glowTexture },
+        uSize: { value: 26 },
+        uOpacity: { value: 0 },
+        uColor: { value: new THREE.Color(0xdcecff) },
+      },
+      vertexShader: /* glsl */ `
+        attribute float aSpeed;
+        uniform float uSize;
+        uniform float uOpacity;
+        varying float vOpacity;
+        void main() {
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = clamp(uSize * (1.0 / max(0.001, -mv.z)) * aSpeed * 6.0, 1.0, 42.0);
+          vOpacity = uOpacity * (0.35 + aSpeed * 0.65);
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform sampler2D uMap;
+        uniform vec3 uColor;
+        varying float vOpacity;
+        void main() {
+          vec4 tex = texture2D(uMap, gl_PointCoord);
+          float a = tex.a * vOpacity;
+          if (a < 0.01) discard;
+          gl_FragColor = vec4(uColor, a);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+    });
+    const points = new THREE.Points(geometry, material);
+    points.frustumCulled = false;
+    points.name = 'precipitation';
+    this.precipPoints = points;
+    this.precipPositions = positions;
+    this.precipMaterial = material;
+    this.group.add(points);
+  }
+
+  private precipPoints: THREE.Points | null = null;
+  private precipPositions: Float32Array | null = null;
+  private precipMaterial: THREE.ShaderMaterial | null = null;
+  private rainTexture: THREE.Texture | null = null;
+  private snowTexture: THREE.Texture | null = null;
+  private readonly precipSize = 190;
+  private precipType: 'none' | 'rain' | 'snow' = 'none';
+  private precipAmount = 0;
+  private precipEnabled = false;
+  private readonly precipCentre = new THREE.Vector3();
+
+  /**
+   * Precipitation request from the active style. `kind` selects the sprite and
+   * the fall speed, `amount` the density (0 hides the layer entirely).
+   */
+  setPrecipitation(kind: 'none' | 'rain' | 'snow', amount: number): void {
+    const clamped = clamp(amount, 0, 1);
+    const wants = kind !== 'none' && clamped > 0.02;
+    if (wants && !this.precipPoints) this.buildPrecipitation();
+    this.precipEnabled = wants;
+    this.precipType = kind;
+    this.precipAmount = clamped;
+    if (!this.precipPoints || !this.precipMaterial) return;
+    this.precipPoints.visible = wants;
+    if (!wants) return;
+    const uniforms = this.precipMaterial.uniforms;
+    if (kind === 'rain') {
+      uniforms.uMap!.value = this.rainTexture ?? this.glowTexture;
+      uniforms.uSize!.value = 2.2;
+      uniforms.uOpacity!.value = clamped * 0.55;
+      (uniforms.uColor!.value as THREE.Color).setHex(0xd6e8ff);
+    } else {
+      uniforms.uMap!.value = this.snowTexture ?? this.glowTexture;
+      uniforms.uSize!.value = 1.6;
+      uniforms.uOpacity!.value = clamped * 0.9;
+      (uniforms.uColor!.value as THREE.Color).setHex(0xf4f8ff);
+    }
+  }
+
+  /** Registers the weather sprites (generated by the material library). */
+  setWeatherTextures(rain: THREE.Texture, snow: THREE.Texture): void {
+    this.rainTexture = rain;
+    this.snowTexture = snow;
+    if (this.precipMaterial && this.precipEnabled) {
+      this.precipMaterial.uniforms.uMap!.value = this.precipType === 'snow' ? snow : rain;
+    }
+  }
+
+  /** Scrolls/recycles the precipitation cloud around the camera. */
+  private updatePrecipitation(dt: number, camera: THREE.Vector3): void {
+    const points = this.precipPoints;
+    const positions = this.precipPositions;
+    if (!points || !positions || !points.visible) return;
+    const size = this.precipSize;
+    const half = size / 2;
+    const rain = this.precipType === 'rain';
+    const fall = rain ? 46 : 7.5;
+    const windX = rain ? 7.5 : 1.6;
+    const windZ = rain ? 2.4 : -1.1;
+    // Density is expressed as a draw range: the unused tail costs nothing.
+    const total = positions.length / 3;
+    points.geometry.setDrawRange(0, Math.max(1, Math.floor(total * clamp(this.precipAmount, 0, 1))));
+    for (let i = 0; i < total; i++) {
+      const i3 = i * 3;
+      positions[i3 + 1] -= (fall * (0.7 + ((i * 37) % 13) / 18)) * dt;
+      positions[i3] += windX * dt;
+      positions[i3 + 2] += windZ * dt;
+      // Wrap into the camera-centred box: never respawn, never allocate.
+      if (positions[i3 + 1]! < this.precipCentre.y - half) positions[i3 + 1] = this.precipCentre.y + half;
+      if (positions[i3]! > this.precipCentre.x + half) positions[i3] -= size;
+      else if (positions[i3]! < this.precipCentre.x - half) positions[i3] += size;
+      if (positions[i3 + 2]! > this.precipCentre.z + half) positions[i3 + 2] -= size;
+      else if (positions[i3 + 2]! < this.precipCentre.z - half) positions[i3 + 2] += size;
+    }
+    // Move the whole cloud in one step when the camera leaves it: shifting the
+    // point object is free, shifting 2600 vertices is not.
+    if (this.precipCentre.distanceToSquared(camera) > half * half) {
+      points.position.x += camera.x - this.precipCentre.x;
+      points.position.z += camera.z - this.precipCentre.z;
+      for (let i = 0; i < total; i++) {
+        positions[i * 3] += camera.x - this.precipCentre.x;
+        positions[i * 3 + 2] += camera.z - this.precipCentre.z;
+      }
+    }
+    this.precipCentre.copy(camera);
+    (points.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
   }
 
   /** Total live particle count (debug / HUD). */

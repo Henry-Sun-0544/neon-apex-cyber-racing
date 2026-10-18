@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CONFIG } from './Config';
-import type { Track } from './Track';
+import type { RaceWorld } from './world/RaceWorld';
 import type { CollisionEvent, StaticBox } from './Types';
 import type { VehicleBase } from './VehicleBase';
 import { clamp, damp, angleDelta } from './Utils';
@@ -64,14 +64,26 @@ export class CollisionSystem {
    * Resolve every contact for one vehicle and return the events that happened.
    * Also keeps the car glued to the road surface (height + slope pitch).
    */
-  resolve(vehicle: VehicleBase, track: Track, opponents: VehicleBase[], dt: number): CollisionEvent[] {
+  resolve(vehicle: VehicleBase, track: RaceWorld, opponents: VehicleBase[], dt: number): CollisionEvent[] {
     const events: CollisionEvent[] = [];
     const proj = track.project(vehicle.position, vehicle.hintIndex);
     vehicle.hintIndex = proj.index;
 
     // ------------------------------------------------- road surface follow
     vehicle.position.y = damp(vehicle.position.y, proj.height, 16, dt);
-    vehicle.roadPitch = -Math.asin(clamp(proj.tangent.y, -0.5, 0.5));
+    // Average the slope over the car's length (sample 2.2 m ahead/behind along
+    // the arc): the instantaneous tangent makes long cars spear through the
+    // deck on tight crests and dips.
+    const ahead = track.frameAt(proj.distance + 2.2);
+    const behind = track.frameAt(proj.distance - 2.2);
+    const slope = (ahead.pos.y - behind.pos.y) / 4.4;
+    vehicle.roadPitch = -Math.asin(clamp(slope, -0.5, 0.5));
+    // Slope along the car heading: the tangent's vertical component weighted
+    // by how nose-aligned the car is with the road. VehicleBase turns this
+    // into gravity (uphill pulls back / downhill pushes on / unbraked cars
+    // roll downhill).
+    vehicle.slopeAlong =
+      proj.tangent.y * (Math.sin(vehicle.yaw) * proj.tangent.x + Math.cos(vehicle.yaw) * proj.tangent.z);
 
     // --------------------------------------------------------- track walls
     const limit = track.halfWidth - 1.15;

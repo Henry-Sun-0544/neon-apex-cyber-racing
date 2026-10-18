@@ -19,23 +19,21 @@ export const CONFIG = {
   /** Track geometry */
   track: {
     /** Half width of the drivable road surface (metres). */
-    halfWidth: 11,
+    halfWidth: 13,
     /** Vertical skirt extruded under the road (hero highway look). */
     skirtDepth: 9,
     /** Resolution of the CatmullRom curve used to sample the ribbon. */
-    samples: 1400,
+    samples: 1600,
     /** Road elevation amplitude (metres). */
-    elevation: 7,
+    elevation: 11,
     /** Distance between guard-rail posts (metres). */
     railStep: 7,
     /** Number of check-point gates around the loop. */
     checkpoints: 12,
     /** Number of boost pads around the loop. */
-    boostPads: 8,
+    boostPads: 5,
     /** Number of support pillars (road -> ground). */
     pillars: 90,
-    /** Ground plane Y (city floor). */
-    groundY: -14,
   },
 
   /** Player car physics (arcade, tuned by feel) */
@@ -169,7 +167,162 @@ export const CONFIG = {
     road: 0x14121f,
     concrete: 0x1b1a2b,
   },
+
+  /** Round 2: style / quality / map-mode defaults and world generation budgets */
+  style: {
+    /** Style used when localStorage has no preference yet. */
+    default: 'cyberpunk' as 'cyberpunk' | 'realistic',
+    /** Seconds for a full 24 h cycle in the realistic style. */
+    dayCycleSeconds: 520,
+    /** Starting hour (0..1) for the realistic style: late golden hour. */
+    startTimeOfDay: 0.46,
+    /** Half-extent of the sun shadow camera (metres). */
+    shadowDistance: 130,
+    /** Traffic density multiplier applied to the quality budget. */
+    trafficDensity: 1,
+  },
+
+  /** Quality preset used when localStorage has no preference yet. */
+  quality: {
+    default: 'high' as 'low' | 'medium' | 'high' | 'ultra',
+  },
+
+  /** Map mode used when localStorage has no preference yet. */
+  map: {
+    default: 'circuit' as 'circuit' | 'openworld',
+  },
+
+  /** Open-world generation budgets (kept out of the gameplay config). */
+  world: {
+    /** World radius in metres (the terrain is a square of 2x this). */
+    extent: 2400,
+    /** Logical height-field resolution used by the noise sampler. */
+    logicalResolution: 1024,
+    /** Vertices per terrain chunk edge. */
+    chunkSegments: 32,
+    /** Sea level (metres). */
+    seaLevel: -26,
+    /** Number of race-route samples (comparable to the circuit's 1600). */
+    routeSamples: 1500,
+    /** Checkpoint count on the open-world route. */
+    checkpoints: 14,
+    /** Boost pads on the open-world route. */
+    boostPads: 8,
+  },
 };
+
+/** Physics/visual tunables of one car, derived from CONFIG.car plus overrides. */
+export type CarStats = typeof CONFIG.car;
+
+/** The selectable chassis bodies. */
+export type ChassisId = 'concept' | 'muscle' | 'sports' | 'suv';
+
+/** Identifiers of the garage cars. */
+export type CarId = 'hellcat' | 'gtr' | 'modely' | 'concept';
+
+/** One selectable car in the garage. */
+export interface CarPreset {
+  id: CarId;
+  /** Display name on the garage card. */
+  name: string;
+  tagline: string;
+  chassis: ChassisId;
+  bodyColor: number;
+  accentColor: number;
+  /** Overrides on top of the base car physics. */
+  stats: Partial<CarStats>;
+}
+
+/**
+ * The garage. Stats are deliberately distinct:
+ *  - HELLCAT  launches hardest, lowest top speed, loosest rear (drift happy)
+ *  - GT-R     highest top speed + grip, lazier launch
+ *  - MODEL Y  electric torque, heavy and stable, not the fastest
+ *  - CONCEPT  the balanced all-rounder everything is tuned against
+ */
+export const GARAGE: CarPreset[] = [
+  {
+    id: 'hellcat',
+    name: 'HELLCAT SRT',
+    tagline: '肌肉车 · 起步猛兽',
+    chassis: 'muscle',
+    bodyColor: 0x7a1420,
+    accentColor: 0xffb347,
+    stats: {
+      accel: 34,
+      brakeForce: 42,
+      drag: 0.0011,
+      maxSpeed: 60,
+      nitroMaxSpeed: 70,
+      thrustCurve: 1.5,
+      steerBase: 2.3,
+      grip: 4.6,
+      nitroGrip: 3.2,
+    },
+  },
+  {
+    id: 'gtr',
+    name: 'NISSAN GT-R',
+    tagline: '四驱战神 · 高速之王',
+    chassis: 'sports',
+    bodyColor: 0x1a2233,
+    accentColor: 0xff2b4d,
+    stats: {
+      accel: 28,
+      brakeForce: 48,
+      drag: 0.00085,
+      maxSpeed: 70,
+      nitroMaxSpeed: 79,
+      thrustCurve: 2.0,
+      steerBase: 2.8,
+      grip: 6.4,
+      nitroGrip: 4.6,
+    },
+  },
+  {
+    id: 'modely',
+    name: 'TESLA MODEL Y',
+    tagline: '电动 SUV · 稳如轨道',
+    chassis: 'suv',
+    bodyColor: 0xe3e9f2,
+    accentColor: 0x2fd6a3,
+    stats: {
+      accel: 33,
+      brakeForce: 46,
+      drag: 0.001,
+      maxSpeed: 64,
+      nitroMaxSpeed: 73,
+      thrustCurve: 1.6,
+      steerBase: 2.2,
+      grip: 5.9,
+      nitroGrip: 4.2,
+    },
+  },
+  {
+    id: 'concept',
+    name: 'CONCEPT-X',
+    tagline: '原型概念车 · 均衡全能',
+    chassis: 'concept',
+    bodyColor: 0x1b2340,
+    accentColor: 0x24f0ff,
+    stats: {
+      accel: 30,
+      brakeForce: 46,
+      drag: 0.0009,
+      maxSpeed: 66,
+      nitroMaxSpeed: 76,
+      thrustCurve: 1.8,
+      steerBase: 2.7,
+      grip: 5.4,
+      nitroGrip: 3.8,
+    },
+  },
+];
+
+/** Resolves a garage preset by id, falling back to the balanced concept car. */
+export function resolveCarPreset(id: string | null | undefined): CarPreset {
+  return GARAGE.find((preset) => preset.id === id) ?? GARAGE.find((p) => p.id === 'concept')!;
+}
 
 /** Human readable racer entry used for the scoreboard. */
 export interface RacerSnapshot {

@@ -1,8 +1,11 @@
 import * as THREE from 'three';
 import { AIController, type AIProfile, type AIWorldView } from './AIController';
+import { resolveCarPreset } from './Config';
 import type { ParticleSystem } from './ParticleSystem';
-import type { Track } from './Track';
+import type { MaterialLibrary } from './MaterialLibrary';
+import type { RaceWorld } from './world/RaceWorld';
 import { VehicleBase } from './VehicleBase';
+import type { VehicleDetail } from './VehicleFactory';
 
 /** An AI-driven car: physics + racing-line brain + exhaust FX. */
 export class AIVehicle extends VehicleBase {
@@ -13,14 +16,41 @@ export class AIVehicle extends VehicleBase {
   private readonly tmp = new THREE.Vector3();
   private readonly backward = new THREE.Vector3();
 
-  constructor(profile: AIProfile, track: Track) {
-    super({ bodyColor: profile.bodyColor, accentColor: profile.accentColor, isPlayer: false });
+  constructor(
+    profile: AIProfile,
+    track: RaceWorld,
+    detail: VehicleDetail = 'low',
+    library: MaterialLibrary | null = null,
+    theme: 'cyberpunk' | 'realistic' = 'cyberpunk',
+  ) {
+    // The driver's garage pick decides silhouette AND physics: AI opponents
+    // have real performance differences, not just paint jobs.
+    const preset = resolveCarPreset(profile.carId);
+    super(
+      {
+        bodyColor: profile.bodyColor,
+        accentColor: profile.accentColor,
+        isPlayer: false,
+        chassis: preset.chassis,
+        theme,
+      },
+      detail,
+      library,
+    );
+    this.tune(preset.stats);
     this.profile = profile;
     this.controller = new AIController(profile, track);
     this.object.name = `ai-car-${profile.name}`;
   }
 
-  update(dt: number, track: Track, particles: ParticleSystem, view: AIWorldView): void {
+  /** Re-points the driver at a new race route (map-mode switch). */
+  setWorld(track: RaceWorld): void {
+    this.controller.setTrack(track);
+    // Force a global projection search on the next frame.
+    this.hintIndex = -1;
+  }
+
+  update(dt: number, track: RaceWorld, particles: ParticleSystem, view: AIWorldView): void {
     const input = this.controller.update(dt, this, view);
     this.updateNitro(dt, input.nitro);
     this.step(dt, input);

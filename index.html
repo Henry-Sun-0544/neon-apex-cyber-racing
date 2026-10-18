@@ -8,9 +8,9 @@
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23070312'/%3E%3Cpath d='M14 50 L32 14 L50 50' stroke='%2324f0ff' stroke-width='6' fill='none'/%3E%3Cpath d='M22 42 L42 42' stroke='%23ff2fb9' stroke-width='6'/%3E%3C/svg%3E"
     />
     <title>Neon Apex: Cyber Racing | 霓虹之巅：赛博竞速</title>
-    <meta name="description" content="Neon Apex: Cyber Racing (NA:CR) - a procedural cyberpunk 3D racing game built with Three.js" />
+    <meta name="description" content="Neon Apex: Cyber Racing (NA:CR) - a procedural 3D racing game with a cyberpunk and a realistic style, built with Three.js" />
   </head>
-  <body>
+  <body data-style="cyberpunk">
     <!-- WebGL canvas host -->
     <div id="app">
       <canvas id="game-canvas"></canvas>
@@ -44,7 +44,7 @@
       <div class="hud-right">
         <div class="minimap-frame">
           <canvas id="minimap" width="200" height="200"></canvas>
-          <div class="minimap-title">TRACK MAP</div>
+          <div class="minimap-title" id="minimap-title">TRACK MAP</div>
         </div>
         <div class="speedo">
           <div class="speedo-value" id="hud-speed">0</div>
@@ -64,10 +64,18 @@
         <div class="boost-indicator" id="hud-boost">BOOST PAD</div>
       </div>
 
+      <!-- Current style / quality / map mode, always visible while racing -->
+      <div class="hud-chips">
+        <span class="chip chip--style" id="hud-style">CYBERPUNK</span>
+        <span class="chip chip--quality" id="hud-quality">HIGH</span>
+        <span class="chip chip--mode" id="hud-mode">CIRCUIT / 赛道</span>
+        <span class="chip chip--degraded hidden" id="hud-degraded">AUTO-LOW</span>
+      </div>
+
       <div class="hud-toast" id="hud-toast"></div>
       <div class="hud-wrongway hidden" id="hud-wrongway">&#9664; WRONG WAY / 逆行 &#9654;</div>
       <div class="hud-keys">
-        <b>W</b> 加速 · <b>S</b> 刹车/倒车 · <b>A/D</b> 转向 · <b>SPACE</b> 氮气 · <b>C</b> 视角 · <b>M</b> 静音 · <b>R</b> 重开
+        <b>W</b> 加速 · <b>S</b> 刹车 · <b>A/D</b> 转向 · <b>SPACE</b> 氮气 · <b>T</b> 风格 · <b>Y</b> 画质 · <b>C</b> 视角 · <b>P</b> 暂停 · <b>M</b> 静音 · <b>R</b> 重开
       </div>
       <div class="hud-fps" id="hud-fps">-- FPS</div>
     </div>
@@ -78,10 +86,38 @@
       <div class="menu-card">
         <div class="title-wrap">
           <h1 class="title-neon" data-text="NEON APEX">NEON APEX</h1>
-          <h2 class="title-sub">CYBER RACING · 霓虹之巅：赛博竞速</h2>
+          <h2 class="title-sub">CYBER RACING · 霓虹之巅：赛博竞速 · 第二轮：双风格 + 开放世界</h2>
         </div>
 
         <div class="menu-grid">
+          <section class="panel garage-panel">
+            <h3>GARAGE / 车库选车</h3>
+            <div class="garage" id="menu-garage"></div>
+          </section>
+
+          <section class="panel">
+            <h3>GAME MODE / 模式设置</h3>
+            <div class="option-block">
+              <div class="option-label">风格 STYLE <span class="option-hint">T</span></div>
+              <div class="option-row" data-group="style"></div>
+            </div>
+            <div class="option-block">
+              <div class="option-label">画质 QUALITY <span class="option-hint">Y</span></div>
+              <div class="option-row" data-group="quality"></div>
+            </div>
+            <div class="option-block">
+              <div class="option-label">地图 MAP MODE</div>
+              <div class="option-row" data-group="map"></div>
+            </div>
+            <div class="option-block">
+              <div class="option-label">天气 WEATHER <span class="option-hint">真实风格</span></div>
+              <div class="option-row" data-group="weather"></div>
+            </div>
+            <p class="option-note" id="option-note">
+              风格可在比赛中随时切换（暂停菜单 / <kbd>T</kbd>），圈数、计时、氮气与名次都会保留。
+            </p>
+          </section>
+
           <section class="panel">
             <h3>CONTROLS / 操作</h3>
             <ul class="controls">
@@ -89,18 +125,24 @@
               <li><kbd>S</kbd><span>刹车 · 倒车 / Brake · Reverse</span></li>
               <li><kbd>A</kbd><kbd>D</kbd><span>转向 / Steer</span></li>
               <li><kbd>Space</kbd><span>氮气 / Nitro boost</span></li>
+              <li><kbd>T</kbd><span>切换风格 / Toggle style</span></li>
+              <li><kbd>Y</kbd><span>切换画质 / Cycle quality</span></li>
               <li><kbd>C</kbd><span>切换相机 / Camera</span></li>
+              <li><kbd>P</kbd> <kbd>Esc</kbd><span>暂停菜单 / Pause</span></li>
               <li><kbd>M</kbd><span>静音 / Mute</span></li>
               <li><kbd>R</kbd><span>重开 / Restart race</span></li>
+              <li><kbd>B</kbd><span>碰撞线框调试 / Collision debug</span></li>
             </ul>
           </section>
+
           <section class="panel">
             <h3>BRIEFING / 赛事简报</h3>
             <ul class="brief">
-              <li>赛道：<b id="menu-laps">3</b> 圈闭合高架环线</li>
+              <li>赛道：<b id="menu-laps">3</b> 圈</li>
               <li>对手：<b id="menu-ai">5</b> 台 AI 赛车</li>
               <li>目标：穿过加速带 · 善用氮气 · 冲过终点</li>
               <li>碰撞会减速，注意护栏与 AI 走线</li>
+              <li id="menu-mode-note">当前模式：闭环赛道</li>
             </ul>
             <div class="audio-row">
               <button id="btn-mute" class="btn btn--ghost" type="button" aria-pressed="false">🔊 SOUND ON</button>
@@ -116,7 +158,43 @@
         <p class="hint" id="menu-hint">点击开始以启用音频（Web Audio 需用户手势）</p>
         <p class="hint hint--err" id="menu-error"></p>
       </div>
-      <div class="menu-footer">NA:CR · Vite + TypeScript + Three.js · 100% 程序化生成资源</div>
+      <div class="menu-footer">NA:CR · Vite + TypeScript + Three.js · 100% 程序化生成资源 · 无外部模型/贴图/音频</div>
+    </div>
+
+    <!-- ============ Pause menu ============ -->
+    <div id="pause" class="overlay overlay--dark hidden">
+      <div class="scanlines"></div>
+      <div class="menu-card pause-card">
+        <h1 class="title-neon title-neon--small" data-text="PAUSED">PAUSED</h1>
+        <p class="pause-sub">比赛已暂停 · 状态完整保留</p>
+
+        <div class="pause-grid">
+          <div class="option-block">
+            <div class="option-label">风格 STYLE <span class="option-hint">T</span></div>
+            <div class="option-row" data-group="style"></div>
+          </div>
+          <div class="option-block">
+            <div class="option-label">画质 QUALITY <span class="option-hint">Y</span></div>
+            <div class="option-row" data-group="quality"></div>
+          </div>
+          <div class="option-block">
+            <div class="option-label">地图 MAP MODE</div>
+            <div class="option-row" data-group="map"></div>
+          </div>
+          <div class="option-block">
+            <div class="option-label">天气 WEATHER <span class="option-hint">真实风格</span></div>
+            <div class="option-row" data-group="weather"></div>
+          </div>
+        </div>
+
+        <div class="pause-state" id="pause-state">—</div>
+
+        <div class="results-actions">
+          <button id="btn-resume" class="btn btn--start" type="button">RESUME / 继续 (P)</button>
+          <button id="btn-pause-restart" class="btn btn--ghost" type="button">RESTART / 重开 (R)</button>
+          <button id="btn-pause-menu" class="btn btn--ghost" type="button">MENU / 返回菜单</button>
+        </div>
+      </div>
     </div>
 
     <!-- ============ Countdown ============ -->
@@ -145,6 +223,15 @@
           <button id="btn-restart" class="btn btn--start" type="button">RESTART / 再来一局 (R)</button>
           <button id="btn-menu" class="btn btn--ghost" type="button">MENU / 返回菜单</button>
         </div>
+      </div>
+    </div>
+
+    <!-- ============ Style switch / world build overlay ============ -->
+    <div id="loading" class="overlay overlay--dark hidden">
+      <div class="loading-box">
+        <div class="loading-ring"></div>
+        <div class="loading-text" id="loading-text">正在切换…</div>
+        <div class="loading-sub" id="loading-sub">保留比赛状态中…</div>
       </div>
     </div>
 

@@ -1,6 +1,6 @@
 import { CONFIG, type RaceResult, type RacerSnapshot } from './Config';
 import type { AIVehicle } from './AIVehicle';
-import type { Track } from './Track';
+import type { RaceWorld } from './world/RaceWorld';
 import type { VehicleBase } from './VehicleBase';
 
 export type RacePhase = 'menu' | 'countdown' | 'racing' | 'finished';
@@ -50,8 +50,18 @@ export class GameState {
   /** Wall-clock time (seconds) when the race was marked finished. */
   finishedAt = 0;
 
+  /** Swaps the race route (map-mode switch) without touching the racers. */
+  setWorld(world: RaceWorld): void {
+    this.track = world;
+    for (const r of this.racers) {
+      r.lastTrackDistance = 0;
+      r.lapDistance = 0;
+      r.vehicle.hintIndex = -1;
+    }
+  }
+
   constructor(
-    private readonly track: Track,
+    private track: RaceWorld,
     player: VehicleBase,
     ais: AIVehicle[],
     playerName = 'YOU',
@@ -118,6 +128,8 @@ export class GameState {
         if (index >= playerSlot) index += 1;
         assign(racer, slots[index % slots.length]!);
       }
+      // Cars wait on the grid; GO unfreezes them (see VehicleBase.step).
+      racer.vehicle.parked = true;
     }
     this.raceTime = 0;
     this.countdown = CONFIG.race.countdownFrom;
